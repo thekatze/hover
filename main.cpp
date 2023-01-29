@@ -1,14 +1,17 @@
-#include "SDL_surface.h"
+#include "entt/entity/fwd.hpp"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_render.h>
+#include <SDL2/SDL_surface.h>
 #include <SDL2/SDL_video.h>
 #include <entt/entt.hpp>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <spdlog/spdlog.h>
 
 // https://dev.to/noah11012/using-sdl2-in-c-and-with-c-too-1l72
 
+// todo: refactor to use entt::resource_cache
 class ResourceManager {
 public:
   ResourceManager(std::shared_ptr<SDL_Window> window,
@@ -21,16 +24,16 @@ public:
         SDL_CreateTextureFromSurface(m_renderer.get(), surface);
 
     if (!texture) {
-      std::cout << "Failed to convert surface into a texture\n";
-      std::cout << "SDL2 Error: " << SDL_GetError() << "\n";
+      spdlog::error("Failed to convert surface into a texture");
+      spdlog::error("SDL2 Error: {}", SDL_GetError());
 
-      throw -1;
+      throw 41;
     }
 
     SDL_FreeSurface(surface);
 
     return std::shared_ptr<SDL_Texture>(
-        texture, [](SDL_Texture* texture){SDL_DestroyTexture(texture);});
+        texture, [](SDL_Texture *texture) { SDL_DestroyTexture(texture); });
   }
 
 private:
@@ -39,7 +42,13 @@ private:
 };
 
 class IScene {
-  virtual void initialize(const ResourceManager &resourceManager);
+  friend class Game;
+
+public:
+  virtual void setup(const std::shared_ptr<ResourceManager> resourceManager){};
+
+protected:
+  entt::registry m_registry = entt::registry();
 };
 
 class Game {
@@ -48,6 +57,9 @@ public:
 
   void run(std::unique_ptr<IScene> scene) {
     bool keep_window_open = true;
+
+    enterScene(std::move(scene));
+
     while (keep_window_open) {
       SDL_Event e;
       while (SDL_PollEvent(&e) > 0) {
@@ -57,8 +69,17 @@ public:
           break;
         }
         SDL_UpdateWindowSurface(m_window.get());
+
+        // call render and update systems on registry
+        auto registry = &m_currentScene->m_registry;
       }
     }
+  }
+
+  void enterScene(std::unique_ptr<IScene> scene) {
+    spdlog::info("Transitioning Scene");
+    m_currentScene = std::move(scene);
+    m_currentScene->setup(m_resourceManager);
   }
 
 private:
@@ -66,13 +87,13 @@ private:
   std::shared_ptr<SDL_Renderer> m_renderer;
   std::shared_ptr<ResourceManager> m_resourceManager;
 
-  std::shared_ptr<entt::registry> m_registry;
+  std::unique_ptr<IScene> m_currentScene;
 
   void initialize() {
     spdlog::info("Initializing SDL2");
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
       spdlog::error("Failed to initialize the SDL2 library");
-      throw -1;
+      throw 21;
     }
     spdlog::info("Creating SDL2 Window");
     m_window = std::shared_ptr<SDL_Window>(
@@ -82,7 +103,7 @@ private:
 
     if (!m_window) {
       spdlog::error("Failed to create window");
-      throw -1;
+      throw 22;
     }
 
     spdlog::info("Creating SDL2 Renderer");
@@ -92,7 +113,7 @@ private:
 
     if (!m_renderer) {
       spdlog::error("Failed to create window");
-      throw -1;
+      throw 23;
     }
 
     spdlog::info("Initializing ResourceManager");
@@ -100,10 +121,45 @@ private:
   }
 };
 
-class MainMenuScene : IScene {
-  void initialize(const ResourceManager &resourceManager) override {
+struct Transform2D {
+  float x;
+  float y;
+  float rotation;
+};
+
+struct Velocity {
+  float dx;
+  float dy;
+};
+
+struct Texture2D {
+  std::shared_ptr<SDL_Texture> texture;
+};
+
+void addRenderingSystem(const entt::registry &registry) {
+  auto renderables = registry.view<const Transform2D, const Texture2D>();
+  renderables.each([](const Transform2D &position, const Texture2D &texture) {
+    spdlog::debug("RENDERING");
+  });
+};
+
+class MainMenuScene : public IScene {
+  void setup(const std::shared_ptr<ResourceManager> resourceManager) override {
     spdlog::info("Initializing Main Menu");
+
+    addRenderingSystem(m_registry);
+
+    auto entity = m_registry.create();
+    m_registry.emplace<Transform2D>(entity, 0.f, 0.f);
+    m_registry.emplace<Texture2D>(
+        entity, resourceManager->loadTexture("hoverboat.bmp"));
   };
 };
 
-int main(int argc, char **argv) { Game().run(std::move(nullptr)); }
+int main(int argc, char **argv) {
+  try {
+    Game().run(std::make_unique<MainMenuScene>());
+  } catch (int code) {
+    spdlog::error("Unexpected error occured: Error Code {}", code);
+  }
+}
