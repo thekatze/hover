@@ -11,6 +11,41 @@
 
 // https://dev.to/noah11012/using-sdl2-in-c-and-with-c-too-1l72
 
+// Timer type from old game framework project (shvrdengine)
+using Duration_t = unsigned int;
+
+class Timer {
+public:
+  Timer() : m_clock(), m_startTime(m_clock.now()) {}
+
+  void start() { m_startTime = m_clock.now(); }
+
+  Duration_t get() {
+    using namespace std::chrono;
+    return duration_cast<duration<Duration_t, std::micro>>(m_clock.now() -
+                                                           m_startTime)
+        .count();
+  }
+
+  static void wait(Duration_t microseconds) {
+    std::this_thread::sleep_for(std::chrono::microseconds(microseconds));
+  }
+
+  static Duration_t now() {
+    using namespace std::chrono;
+    return duration_cast<duration<Duration_t, std::micro>>(
+               system_clock::now().time_since_epoch())
+        .count();
+  }
+
+private:
+  using Clock_t = std::chrono::high_resolution_clock;
+  using TimePoint_t = Clock_t::time_point;
+
+  Clock_t m_clock;
+  TimePoint_t m_startTime;
+};
+
 // todo: refactor to use entt::resource_cache
 class ResourceManager {
 public:
@@ -53,25 +88,25 @@ protected:
 
 class Game {
 public:
-  Game() { initialize(); };
+  Game() : m_targetFps(60.f), m_targetUps(60.f) { initialize(); };
 
   void run(std::unique_ptr<IScene> scene) {
-    bool keep_window_open = true;
+    m_running = true;
 
     enterScene(std::move(scene));
 
-    while (keep_window_open) {
-      SDL_Event e;
-      while (SDL_PollEvent(&e) > 0) {
-        switch (e.type) {
-        case SDL_QUIT:
-          keep_window_open = false;
-          break;
-        }
-        SDL_UpdateWindowSurface(m_window.get());
+    m_lastUpdate = Timer::now();
 
-        // call render and update systems on registry
-        auto registry = &m_currentScene->m_registry;
+    while (m_running) {
+      Timer m_timer = Timer();
+      update();
+      render();
+      Duration_t elapsed = m_timer.get();
+
+      int remainingFrameTime = (1000000.f / m_targetFps) - elapsed;
+
+      if (remainingFrameTime > 0) {
+        Timer::wait(remainingFrameTime);
       }
     }
   }
@@ -83,11 +118,45 @@ public:
   }
 
 private:
+  bool m_running;
+  Duration_t m_lastUpdate;
+
+  float m_targetFps;
+  float m_targetUps;
+
   std::shared_ptr<SDL_Window> m_window;
   std::shared_ptr<SDL_Renderer> m_renderer;
   std::shared_ptr<ResourceManager> m_resourceManager;
-
   std::unique_ptr<IScene> m_currentScene;
+
+  void update() {
+    Duration_t lastUpdate = m_lastUpdate;
+    Duration_t timeSinceLastTick = Timer::now() - lastUpdate;
+
+    for (int ticksToCatchUp = (m_targetUps * timeSinceLastTick) / 1000000.f; ticksToCatchUp > 0; --ticksToCatchUp) {
+      tick();
+      m_lastUpdate = Timer::now();
+    }
+  }
+
+  void tick() {
+    SDL_Event e;
+    while (SDL_PollEvent(&e) > 0) {
+      switch (e.type) {
+      case SDL_QUIT:
+        m_running = false;
+        break;
+      }
+      SDL_UpdateWindowSurface(m_window.get());
+    }
+    // call update systems on registry
+    auto registry = &m_currentScene->m_registry;
+  }
+
+  void render() {
+    // call render systems on registry
+    auto registry = &m_currentScene->m_registry;
+  }
 
   void initialize() {
     spdlog::info("Initializing SDL2");
@@ -147,12 +216,10 @@ class MainMenuScene : public IScene {
   void setup(const std::shared_ptr<ResourceManager> resourceManager) override {
     spdlog::info("Initializing Main Menu");
 
-    addRenderingSystem(m_registry);
-
     auto entity = m_registry.create();
     m_registry.emplace<Transform2D>(entity, 0.f, 0.f);
-    m_registry.emplace<Texture2D>(
-        entity, resourceManager->loadTexture("hoverboat.bmp"));
+    // m_registry.emplace<Texture2D>(
+    //    entity, resourceManager->loadTexture("hoverboat.bmp"));
   };
 };
 
